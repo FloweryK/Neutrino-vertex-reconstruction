@@ -1,4 +1,3 @@
-import networks
 from utils import load, save, strftime, mkdir, path_list
 
 import argparse
@@ -189,16 +188,16 @@ def _job_filter_zero_counts(path, input_type):
 def main():
     # argument configuration
     parser = argparse.ArgumentParser()
-    parser.add_argument('--root_directory', type=str, default='MC', help='MC root directory')
-    parser.add_argument('--input_type', type=str, default='prompt', help='input type from prompt, delayed or all')
-    parser.add_argument('--output_type', type=str, default='vertex', help='output type from prompt, delayed or IBD vertex')
-    parser.add_argument('--learning_rate', type=float, default=1e-4, help='learning rate')
-    parser.add_argument('--batch_size', type=int, default=32, help='batch size, multiplied by cuda device number')
-    parser.add_argument('--worker', type=int, default=128, help='num_worker of dataloader')
     parser.add_argument('--test', type=str, default='', help='additional text to test save directory')
     parser.add_argument('--epochs', type=int, default=40, help='number of epochs')
-    parser.add_argument('--dataset_size', type=int, default=0, help='number of dataset, if 0, use all')
+    parser.add_argument('--worker', type=int, default=128, help='num_worker of dataloader')
     parser.add_argument('--network', type=str, default='Net', help='network type.')
+    parser.add_argument('--batch_size', type=int, default=32, help='batch size, multiplied by cuda device number')
+    parser.add_argument('--input_type', type=str, default='prompt', help='input type from prompt, delayed or all')
+    parser.add_argument('--output_type', type=str, default='vertex', help='output type from prompt, delayed or IBD vertex')
+    parser.add_argument('--dataset_size', type=int, default=0, help='number of dataset, if 0, use all')
+    parser.add_argument('--learning_rate', type=float, default=1e-4, help='learning rate')
+    parser.add_argument('--root_directory', type=str, default='MC', help='MC root directory')
 
     args = parser.parse_args()
     root_directory = args.r
@@ -264,7 +263,7 @@ def main():
     save(test_labels, save_directory + '/test_labels.tensor')
 
     # network, criterion, optimizer
-    net = networks.pick(net_type)
+    net = Net()
     criterion = nn.MSELoss()
     optimizer = optim.Adam(net.parameters(), lr=lr)
 
