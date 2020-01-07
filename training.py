@@ -20,6 +20,28 @@ from torch.utils.data import Dataset, DataLoader
 torch.multiprocessing.set_sharing_strategy('file_system')
 
 
+class Net(nn.Module):
+    def __init__(self):
+        super(Net, self).__init__()
+        self.fc1 = nn.Linear(354, 128)
+        self.relu1 = nn.ReLU()
+
+        self.fc2 = nn.Linear(128, 64)
+        self.relu2 = nn.ReLU()
+
+        self.fc3 = nn.Linear(64, 3)
+
+        nn.init.xavier_uniform_(self.fc1.weight, gain=nn.init.calculate_gain('relu'))
+        nn.init.xavier_uniform_(self.fc2.weight, gain=nn.init.calculate_gain('relu'))
+
+    def forward(self, x):
+        x = x.view(x.size(0), -1)
+        x = self.relu1(self.fc1(x))
+        x = self.relu2(self.fc2(x))
+        x = self.fc3(x)
+        return x
+
+
 class JsonDataset(Dataset):
     def __init__(self, paths, input_type='prompt', output_type='prompt'):
         self.paths = paths
