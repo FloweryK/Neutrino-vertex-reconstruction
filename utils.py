@@ -3,17 +3,24 @@ import json
 import time
 import pickle
 import datetime
-
 import torch
 import torch.nn as nn
 
+DEAD_PMTS = [12, 31, 103, 111, 148, 157, 192, 219, 228, 240, 251, 270, 278, 342]
 
+''' 
 def mkdir(path):
     if not os.path.exists(path):
         os.makedirs(path, exist_ok=True)
-
+'''
 
 def save(data, path):
+    path_split = list(filter(None, path.split('/')))
+    if len(path_split) > 1:
+        dir = '/'.join(path_split[:-1])
+        path = '/'.join(path_split)
+        if not os.path.exists(dir):
+            os.makedirs(dir, exist_ok=True)
     if path[-4:] == 'json':
         with open(path, 'w', encoding='UTF8') as f:
             json.dump(data, f, ensure_ascii=False)
@@ -33,9 +40,12 @@ def load(path):
     return result
 
 
-def file_list(path):
+def file_list(path, filter=False):
     try:
-        return sorted(os.listdir(path))
+        if filter:
+            return [p for p in sorted(os.listdir(path)) if filter in p]
+        else:
+            return [p for p in sorted(os.listdir(path))]
     except FileNotFoundError:
         print(path + 'not found')
         return False
@@ -55,25 +65,6 @@ def path_list(dir, filter=False, reverse=False):
 def strftime(form='%Y%m%d-%H:%M:%S'):
     return datetime.datetime.now().strftime(form)
 
-
-def get_labels(root_directory, target, form='tensor'):
-    labels = load(root_directory + '/' + target + '_labels.tensor')
-    labels = labels.float()
-
-    if form is 'numpy':
-        labels = labels.numpy()
-
-    return labels
-
-
-def get_inputs(root_directory, target, form='tensor'):
-    inputs = load(root_directory + '/' + target + '_inputs.tensor')
-    inputs = inputs.float()
-
-    if form is 'numpy':
-        inputs = inputs.numpy()
-
-    return inputs
 
 
 def get_epoch_outputs(root_directory, inputs, net, form='tensor'):
