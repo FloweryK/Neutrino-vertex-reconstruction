@@ -71,6 +71,9 @@ def get_nn_outputs(model_directory, inputs, epoch, gpu=True):
     outputs = net(inputs).detach().cpu().clone().numpy().T
     outputs *= 1000
 
+    # correction related to attenuation length from cwm (2018 -> 2013)
+    outputs *= 1.09723 / 0.8784552
+
     # add correction
     '''
     vali_inputs = __get_inputs(model_directory, target='vali')
@@ -129,7 +132,8 @@ def get_cwm_outputs(inputs, interpol_kind='linear'):
 
         weight1r = interp_r(__perp(reco_vertex), abs(reco_vertex[2]))
         weight1z = interp_z(__perp(reco_vertex), abs(reco_vertex[2]))
-        weight2 = 0.8784552 - 0.0000242758 * __perp(reco_vertex)
+        weight2 = 1.09723 + (1.04556 - 1.09723) / 1685 * __perp(reco_vertex)    # base point -> 2013
+        # weight2 = 0.8784552 - 0.0000242758 * __perp(reco_vertex)  # base point -> 2018
         reco_vertex[:2] *= weight1r
         reco_vertex[2] *= weight1z
         reco_vertex *= weight2
