@@ -264,7 +264,6 @@ def main():
 
     # show and save config summary
     pprint.pprint(config)
-    mkdir(save_directory)
     save(config, save_directory + '/configuration.json')
 
     # load dataset paths, only valid ones.
