@@ -29,35 +29,17 @@ def get_inputs(root_directory, target, form='tensor'):
 
 # TODO: check with cpu usage
 def get_nn_outputs(model_directory, inputs, epoch, gpu=True):
-    def __get_labels(root_directory, target, form='tensor'):
-        labels = load(root_directory + '/' + target + '_labels.tensor')
-        labels = labels.float()
-
-        if form is 'numpy':
-            labels = labels.numpy()
-
-        return labels
-
-    def __get_inputs(root_directory, target, form='tensor'):
-        inputs = load(root_directory + '/' + target + '_inputs.tensor')
-        inputs = inputs.float()
-
-        if form is 'numpy':
-            inputs = inputs.numpy()
-
-        return inputs
-
     net = Net()
 
     if gpu and torch.cuda.is_available():
         device = torch.device('cuda')
-
         # data parallelism
         if torch.cuda.device_count() > 1:
             print('currently using ' + str(torch.cuda.device_count()) + ' cuda devices.')
             net = nn.DataParallel(net)
     else:
         device = torch.device('cpu')
+
     net.to(device)
 
     # load state
@@ -72,17 +54,25 @@ def get_nn_outputs(model_directory, inputs, epoch, gpu=True):
     outputs *= 1000
 
     # correction related to attenuation length from cwm (2018 -> 2013)
-    outputs *= 1.09723 / 0.8784552
+    # r' = [(a-b)/R * r + b] * r                    -> [c * r + d] * r
+    # z' = [(a-b)/R * r + b] * z                    -> [c * r + d] * z
+    # r = [R/2(a-b)] * [-b + sqrt(b^2 + 4(a-b)/R * r')]  -> (1/2c) * (-d + sqrt(d^2 + 4cr'))
+    # z = 1/(c * r + d) * z'
 
-    # add correction
-    '''
-    vali_inputs = __get_inputs(model_directory, target='vali')
-    vali_labels = __get_labels(model_directory, target='vali', form='numpy')
-    vali_outputs = net(vali_inputs).detach().cpu().clone().numpy()
-    vali_residual = (vali_outputs - vali_labels) * 1000
-    vali_residual = vali_residual.T
-    vali_mean = np.mean(vali_residual, axis=1)
-    '''
+    # 2018 -> 2010 transform
+    # weight2 = 0.8784552 - 0.0000242758 * __perp(reco_vertex)  # base point -> 2018
+    c = -0.0000242758
+    d = 0.8784552
+    outputs_r = np.sqrt(outputs[0]**2 + outputs[1]**2)
+    outputs_r0 = 1/(2*c) * (-d + np.sqrt(np.square(d) + 4*c*outputs_r))
+    outputs *= 1 / (c * outputs_r0 + d)
+
+    # 2010 -> 2013 transform
+    # weight2 = 1.09723 + (1.04556 - 1.09723) / 1685 * __perp(reco_vertex)    # base point -> 2013
+    c = (1.04556 - 1.09723) / 1685
+    d = 1.09723
+    outputs_r0 = np.sqrt(outputs[0]**2 + outputs[1]**2)
+    outputs *= (c * outputs_r0 + d)
 
     return outputs
 
