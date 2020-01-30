@@ -35,13 +35,11 @@ class Net(nn.Module):
         nn.init.xavier_uniform_(self.fc1.weight, gain=nn.init.calculate_gain('relu'))
         nn.init.xavier_uniform_(self.fc2.weight, gain=nn.init.calculate_gain('relu'))
 
-
     def forward(self, x):
         x = x.view(x.size(0), -1)
         x = self.relu1(self.fc1(x))
         x = self.relu2(self.fc2(x))
         x = self.fc3(x)
-
         return x
 
     def num_flat_features(self, x):
