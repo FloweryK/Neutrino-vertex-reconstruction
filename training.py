@@ -1,16 +1,13 @@
-from utils import load, save, path_list, strftime
+from utils import mkdir, save, path_list, strftime
 from utils import DEAD_PMTS
 
 import time
 import json
 import pprint
-import random
 import argparse
 import datetime
 import numpy as np
 import pandas as pd
-from itertools import repeat
-from multiprocessing import Pool
 
 import torch
 import torch.nn as nn
@@ -24,30 +21,23 @@ torch.multiprocessing.set_sharing_strategy('file_system')
 class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
-        self.fc1 = nn.Linear(354, 128)
-        self.relu1 = nn.ReLU()
+        self.model = nn.Sequential(
+            nn.Linear(354, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, 3)
+        )
 
-        self.fc2 = nn.Linear(128, 64)
-        self.relu2 = nn.ReLU()
-
-        self.fc3 = nn.Linear(64, 3)
-
-        nn.init.xavier_uniform_(self.fc1.weight, gain=nn.init.calculate_gain('relu'))
-        nn.init.xavier_uniform_(self.fc2.weight, gain=nn.init.calculate_gain('relu'))
+        # initialize linear layers
+        for m in self.modules():
+            if type(m) is nn.Linear:
+                torch.nn.init.xavier_uniform(m.weight, gain=nn.init.calculate_gain('relu'))
 
     def forward(self, x):
         x = x.view(x.size(0), -1)
-        x = self.relu1(self.fc1(x))
-        x = self.relu2(self.fc2(x))
-        x = self.fc3(x)
-        return x
-
-    def num_flat_features(self, x):
-        size = x.size()[1:]  # all dimensions except the batch dimension
-        num_features = 1
-        for s in size:
-            num_features *= s
-        return num_features
+        out = self.model(x)
+        return out
 
 
 class JsonDataset(Dataset):
@@ -122,188 +112,94 @@ class JsonDataset(Dataset):
                 vertex_z0 = f['vertex_z0']
 
             vertex = [vertex_x0, vertex_y0, vertex_z0]
-
             y = np.array(vertex) / 1000  # mm -> m transform
 
         return y
 
 
-def load_all(dataloader):
-    total = len(dataloader)
+def load_all(dataset):
+    total = len(dataset)
     start = time.time()
 
     inputs = []
     labels = []
-
-    for i, data in enumerate(dataloader):
-        inputs.append(data[0])
-        labels.append(data[1])
-
-        print('data loading [%2i%%] (%i/%i), %.2fs' % (int(100 * i / total), i, total, time.time() - start),
+    for i, data in enumerate(dataset):
+        inputs.append(data[0].tolist())
+        labels.append(data[1].tolist())
+        print(f'data loading {int(100 * i / total)}% ({i}/{total}, {time.time() - start})',
               end='\n' if i == (total - 1) else '\r')
 
-    print('input, labels cat...', end='')
-    inputs = torch.cat(inputs, 0)
-    labels = torch.cat(labels, 0)
-    print('complete.')
-    print('inputs size:', inputs.size())
-    print('labels size:', labels.size())
+    inputs = torch.tensor(inputs)
+    labels = torch.tensor(labels)
 
-    print('data loading took %.2f secs' % (time.time() - start))
+    print(f'inputs: {inputs.size()}')
+    print(f'labels: {labels.size()}')
+    print(f'data loading took {time.time() - start:.1f} secs')
 
     return inputs, labels
-
-
-def __job_filter_zero_counts(path, input_type):
-    f = load(path)
-
-    capture_time = f['capture_time']  # scalar value
-    hits = int(f['photon_hits'])  # scalar value
-    hit_counts = f['hit_count']  # vector value
-    hit_time = f['hit_time']  # vector value
-
-    valid_counts = 0
-
-    for i in range(hits):
-        count = hit_counts[i]
-        t = hit_time[i]
-
-        # get prompted signal (before capture) or delayed signal (after capture)
-        if input_type == 'prompt':
-            if t < capture_time:
-                valid_counts += count
-        elif input_type == 'delayed':
-            if t >= capture_time:
-                valid_counts += count
-        else:
-            valid_counts += count
-
-    if (valid_counts > 0) and (valid_counts < sum(hit_counts)):
-        return True
-    else:
-        return False
-
-
-def filter_zero_counts(paths, input_type):
-    p = Pool(processes=40)
-
-    is_not_empty = []
-
-    start = time.time()
-    for i in range(100):
-        print('data filtering %2i%%, %.2fs' % (i, time.time() - start),
-              end='\n' if i == 99 else '\r')
-        paths_batch = paths[int(0.01*i*len(paths)):int(0.01*(i+1)*len(paths))]
-
-        is_not_empty += p.starmap(__job_filter_zero_counts, zip(paths_batch, repeat(input_type)))
-
-    filtered_paths = [paths[i] for i in range(len(is_not_empty)) if is_not_empty[i]]
-
-    print('after filtering: %i->%i (%.1f%%)'
-          % (len(paths), len(filtered_paths), 100 * len(filtered_paths) / len(paths)))
-
-    return filtered_paths
 
 
 def main():
     # argument configuration
     parser = argparse.ArgumentParser()
-    parser.add_argument('-r', type=str, default='MC', help='MC root directory')
-    parser.add_argument('-i', type=str, default='prompt', help='input type from prompt, delayed or all')
-    parser.add_argument('-o', type=str, default='prompt', help='output type from prompt, delayed or IBD vertex')
-    parser.add_argument('-l', type=float, default=1e-4, help='learning rate')
-    parser.add_argument('-b', type=int, default=32, help='batch size, multiplied by cuda device number')
-    parser.add_argument('-w', type=int, default=128, help='num_worker of dataloader')
-    parser.add_argument('-t', type=str, default='', help='additional text to test save directory')
-    parser.add_argument('-e', type=int, default=40, help='number of epochs')
-    parser.add_argument('-d', type=int, default=0, help='number of dataset, if 0, use all')
-    parser.add_argument('-n', type=str, default='Net', help='network type.')
-    parser.add_argument('-p', type=int, default=1, help='is dead PMT on or not.')
+    parser.add_argument('--root', type=str, default='MC', help='MC root directory')
+    parser.add_argument('--input', type=str, default='prompt', help='input type from prompt, delayed or all')
+    parser.add_argument('--output', type=str, default='prompt', help='output type from prompt, delayed or IBD vertex')
+    parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
+    parser.add_argument('--batch', type=int, default=32, help='batch size, multiplied by cuda device number')
+    parser.add_argument('--worker', type=int, default=128, help='num_worker of dataloader')
+    parser.add_argument('--text', type=str, default='', help='additional text to test save directory')
+    parser.add_argument('--epoch', type=int, default=40, help='number of epochs')
+    parser.add_argument('--data', type=int, default=0, help='number of dataset, if 0, use all')
+    parser.add_argument('--dead', type=int, default=1, help='is dead PMT on or not.')
 
     args = parser.parse_args()
-    root_directory = args.r
-    input_type = args.i
-    output_type = args.o
-    lr = args.l
-    batch_size = args.b * (torch.cuda.device_count() if torch.cuda.is_available() else 1)
-    num_worker = args.w
-    num_epochs = args.e
-    num_dataset = args.d
-    net_type = args.n
-    dead_pmt = args.p
+    root_directory = args.root
+    input_type = args.input
+    output_type = args.output
+    lr = args.lr
+    batch_size = args.batch * (torch.cuda.device_count() if torch.cuda.is_available() else 1)
+    num_worker = args.worker
+    num_epochs = args.epoch
+    num_dataset = args.data
+    dead_pmt = args.dead
 
     # save directory
     save_directory = strftime('%Y%m%d-%H%M') + '_' + input_type + '-' + output_type
-    if args.t:
-        save_directory += '_' + args.t
+    if args.text:
+        save_directory += '_' + args.text
+
+    # load dataset paths
+    paths = path_list(root_directory, filter='.json', shuffle=True)
+    if num_dataset:
+        paths = paths[:num_dataset]
+
+    # prepare trainset
+    trainpaths = paths[:int(len(paths) * 0.8)]
+    trainset = JsonDataset(paths=trainpaths, input_type=input_type, output_type=output_type, dead=dead_pmt)
+    trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=num_worker)
+    save(trainpaths, save_directory + '/trainpaths.list')
+
+    # prepare valiset
+    valipaths = paths[int(len(paths) * 0.8):int(len(paths) * 0.9)]
+    valiset = JsonDataset(paths=valipaths, input_type=input_type, output_type=output_type, dead=dead_pmt)
+    vali_inputs, vali_labels = load_all(valiset)
+    save(valipaths, save_directory + '/valipaths.list')
+    save(vali_inputs, save_directory + '/vali_inputs.tensor')
+    save(vali_labels, save_directory + '/vali_labels.tensor')
+
+    # prepare testset
+    testpaths = paths[int(len(paths) * 0.9):]
+    testset = JsonDataset(paths=testpaths, input_type=input_type, output_type=output_type, dead=dead_pmt)
+    test_inputs, test_labels = load_all(testset)
+    save(testpaths, save_directory + '/testpaths.list')
+    save(test_inputs, save_directory + '/test_inputs.tensor')
+    save(test_labels, save_directory + '/test_labels.tensor')
 
     # network, criterion, optimizer
     net = Net()
     criterion = nn.MSELoss()
     optimizer = optim.Adam(net.parameters(), lr=lr)
-
-    # configuration summary
-    config = {
-        'root_directory': root_directory,
-        'save directory': save_directory,
-        'input_type': input_type,
-        'output_type': output_type,
-        'lr': lr,
-        'batch_size': batch_size,
-        'num_worker': num_worker,
-        'num_epochs': num_epochs,
-        'number of data using:': num_dataset if num_dataset else 'full load',
-        'model': {
-            l[0]: str(l[1]) for l in net.named_children()
-        },
-        'net_type': net_type,
-        'using_dead_pmt': dead_pmt,
-    }
-
-    # show and save config summary
-    pprint.pprint(config)
-    save(config, save_directory + '/configuration.json')
-
-    # load dataset paths, only valid ones.
-    paths = path_list(root_directory, filter='.json')
-    paths = filter_zero_counts(paths, input_type)
-
-    # shuffle the dataset
-    random.shuffle(paths)
-
-    # if num_dataset exists, cut the dataset.
-    if num_dataset:
-        paths = paths[:num_dataset]
-
-    # define paths
-    trainpaths = paths[:int(len(paths) * 0.8)]
-    valipaths = paths[int(len(paths) * 0.8):int(len(paths) * 0.9)]
-    testpaths = paths[int(len(paths) * 0.9):]
-
-    # define datasets
-    trainset = JsonDataset(paths=trainpaths, input_type=input_type, output_type=output_type, dead=dead_pmt)
-    valiset = JsonDataset(paths=valipaths, input_type=input_type, output_type=output_type, dead=dead_pmt)
-    testset = JsonDataset(paths=testpaths, input_type=input_type, output_type=output_type, dead=dead_pmt)
-
-    # define dataloaders
-    trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=num_worker)
-    valiloader = DataLoader(valiset, batch_size=batch_size, shuffle=True, num_workers=num_worker)
-    testloader = DataLoader(testset, batch_size=batch_size, shuffle=True, num_workers=num_worker)
-
-    # load all from sample, vali, test
-    vali_inputs, vali_labels = load_all(valiloader)
-    test_inputs, test_labels = load_all(testloader)
-
-    # save all paths
-    save(trainpaths, save_directory + '/trainpaths.list')
-    save(valipaths, save_directory + '/valipaths.list')
-    save(testpaths, save_directory + '/testpaths.list')
-
-    # save all inputs, labels of sample, vali, test
-    save(vali_inputs, save_directory + '/vali_inputs.tensor')
-    save(vali_labels, save_directory + '/vali_labels.tensor')
-    save(test_inputs, save_directory + '/test_inputs.tensor')
-    save(test_labels, save_directory + '/test_labels.tensor')
 
     # Use data parallelism for GPU usage.
     if torch.cuda.device_count() > 1:
@@ -321,32 +217,53 @@ def main():
     vali_inputs = vali_inputs.to(device)
     vali_labels = vali_labels.to(device)
 
+    # configuration summary
+    config = {
+        'root_directory': root_directory,
+        'save directory': save_directory,
+        'input_type': input_type,
+        'output_type': output_type,
+        'lr': lr,
+        'batch_size': batch_size,
+        'num_worker': num_worker,
+        'num_epochs': num_epochs,
+        'number of data using:': num_dataset if num_dataset else 'full load',
+        'model': {l[0]: str(l[1]) for l in net.named_children()},
+        'using_dead_pmt': dead_pmt,
+    }
+
+    # show and save config summary
+    pprint.pprint(config)
+    save(config, save_directory + '/configuration.json')
+
     # optional: check start time
     start_time = datetime.datetime.now()
 
     loss_history = {}
-
     for epoch in range(num_epochs):
         for i, data in enumerate(trainloader):
+            # Get inputs and labels
             train_inputs, train_labels = data
 
-            # Runtime error handling for float type
+            # Runtime error handling for float type to use Data parallelism.
             train_inputs = train_inputs.float()
             train_labels = train_labels.float()
 
-            # move data to GPU
+            # Move data to GPU
             train_inputs = train_inputs.to(device)
             train_labels = train_labels.to(device)
 
+            # Get outputs
             optimizer.zero_grad()
-
             train_outputs = net(train_inputs)
+
+            # Evaluate loss and optimize (update network)
             loss = criterion(train_outputs, train_labels)
             loss.backward()
             optimizer.step()
 
+            # Get validation results
             if i % 100 == 0:
-                # test
                 vali_outputs = net(vali_inputs)
                 vali_outputs = vali_outputs.detach().cpu().clone().numpy()
                 try:
@@ -364,13 +281,12 @@ def main():
                     'vali_sigma': vali_sigma,
                     'vali_mu': vali_mu
                 }
-
                 dframe = pd.DataFrame(dframe).T
 
                 print('===========================================')
-                print(datetime.datetime.now(), '(started at:', start_time, ')')
-                print('epoch: %02i [%04i/%04i], train loss(mm2)=%.1f, vali loss(mm2)=%.1f'
-                      % (epoch, i, len(trainset) / batch_size, loss.item() * 1000000, vali_loss))
+                print(f'{datetime.datetime.now()} (started at: {start_time})')
+                print(f'epoch: {epoch:02i} [{i:04i}/{len(trainloader)}]')
+                print(f'train loss(mm2)={loss.item() * 10e6:.1f}, vali loss(mm2)={vali_loss}')
                 print(dframe)
 
                 if epoch not in loss_history:
@@ -378,6 +294,7 @@ def main():
                 loss_history[epoch][i] = loss.item()
 
                 save(loss_history, save_directory + '/loss_history.json')
+                mkdir(save_directory + '/models/epoch_%05i/' % epoch)
                 torch.save(net.state_dict(), save_directory + '/models/epoch_%05i/%05i.pt' % (epoch, i))
 
 
