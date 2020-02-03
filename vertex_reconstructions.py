@@ -29,35 +29,17 @@ def get_inputs(root_directory, target, form='tensor'):
 
 # TODO: check with cpu usage
 def get_nn_outputs(model_directory, inputs, epoch, gpu=True):
-    def __get_labels(root_directory, target, form='tensor'):
-        labels = load(root_directory + '/' + target + '_labels.tensor')
-        labels = labels.float()
-
-        if form is 'numpy':
-            labels = labels.numpy()
-
-        return labels
-
-    def __get_inputs(root_directory, target, form='tensor'):
-        inputs = load(root_directory + '/' + target + '_inputs.tensor')
-        inputs = inputs.float()
-
-        if form is 'numpy':
-            inputs = inputs.numpy()
-
-        return inputs
-
     net = Net()
 
     if gpu and torch.cuda.is_available():
         device = torch.device('cuda')
-
         # data parallelism
         if torch.cuda.device_count() > 1:
             print('currently using ' + str(torch.cuda.device_count()) + ' cuda devices.')
             net = nn.DataParallel(net)
     else:
         device = torch.device('cpu')
+
     net.to(device)
 
     # load state
@@ -68,29 +50,32 @@ def get_nn_outputs(model_directory, inputs, epoch, gpu=True):
     inputs = torch.FloatTensor(inputs)
     inputs.to(device)
 
+    # get outputs
     outputs = net(inputs).detach().cpu().clone().numpy().T
     outputs *= 1000
 
-    # correction related to attenuation length from cwm (2018 -> 2013)
-    outputs *= 1.09723 / 0.8784552
+    # MC data -> raw data transfrom
+    # r' = [(a-b)/R * r + b] * r                    -> [c * r + d] * r
+    # z' = [(a-b)/R * r + b] * z                    -> [c * r + d] * z
+    # r = [R/2(a-b)] * [-b + sqrt(b^2 + 4(a-b)/R * r')]  -> (1/2c) * (-d + sqrt(d^2 + 4cr'))
+    # z = 1/(c * r + d) * z'
+    # c = -0.0000242758
+    c = (0.8375504 - 0.8784552) / 1685
+    d = 0.8784552
+    outputs_r = np.sqrt(outputs[0]**2 + outputs[1]**2)
+    outputs_r0 = 1/(2*c) * (-d + np.sqrt(np.square(d) + 4*c*outputs_r))
+    outputs *= 1 / (c * outputs_r0 + d)
 
-    # add correction
-    '''
-    vali_inputs = __get_inputs(model_directory, target='vali')
-    vali_labels = __get_labels(model_directory, target='vali', form='numpy')
-    vali_outputs = net(vali_inputs).detach().cpu().clone().numpy()
-    vali_residual = (vali_outputs - vali_labels) * 1000
-    vali_residual = vali_residual.T
-    vali_mean = np.mean(vali_residual, axis=1)
-    '''
+    # raw data -> source data transform
+    c = (1.04556 - 1.09723) / 1685
+    d = 1.09723
+    outputs_r0 = np.sqrt(outputs[0]**2 + outputs[1]**2)
+    outputs *= (c * outputs_r0 + d)
 
     return outputs
 
 
 def get_cwm_outputs(inputs, interpol_kind='linear'):
-    def __perp(vertex):
-        return np.linalg.norm(vertex[:2])
-
     try:
         interp_r = load('src/interp_r')
         interp_z = load('src/interp_z')
@@ -113,33 +98,40 @@ def get_cwm_outputs(inputs, interpol_kind='linear'):
         Z = df[1]
         weight_R = df[2]
         weight_Z = df[3]
-
         interp_r = interpolate.interp2d(R, Z, weight_R, kind=interpol_kind)
         interp_z = interpolate.interp2d(R, Z, weight_Z, kind=interpol_kind)
 
         save(interp_r, 'src/interp_r')
         save(interp_z, 'src/interp_z')
 
+    # load pmt locations
     pmt_positions = load('src/pmtcoordinates_ID.json')
+
+    # get outputs from inputs
     outputs = []
     for x in inputs:
         reco_vertex = np.array([.0, .0, .0])
 
+        # Original Charge Weighting method
         for pmt_id, hits in enumerate(x):
             pmt_pos = pmt_positions[str(pmt_id)]
             reco_vertex += hits * np.array([pmt_pos['x'], pmt_pos['y'], pmt_pos['z']], dtype=float)
         reco_vertex = reco_vertex / sum(x)
 
-        weight1r = interp_r(__perp(reco_vertex), abs(reco_vertex[2]))
-        weight1z = interp_z(__perp(reco_vertex), abs(reco_vertex[2]))
-        weight2 = 1.09723 + (1.04556 - 1.09723) / 1685 * __perp(reco_vertex)    # base point -> 2013
-        # weight2 = 0.8784552 - 0.0000242758 * __perp(reco_vertex)  # base point -> 2018
+        # Corrections on CWM
+        r = np.linalg.norm(reco_vertex[:2])
+        z = reco_vertex[2]
+        weight1r = interp_r(r, abs(z))
+        weight1z = interp_z(r, abs(z))
+        weight2 = 1.09723 + (1.04556 - 1.09723) / 1685 * np.linalg.norm(r)    # raw data -> source data
+        # weight2 = 0.8784552 - 0.0000242758 * __perp(reco_vertex)  # raw data -> MC data
         reco_vertex[:2] *= weight1r
         reco_vertex[2] *= weight1z
         reco_vertex *= weight2
 
-        outputs.append(reco_vertex)     # N * [x, y, z]
+        outputs.append(reco_vertex)
 
-    outputs = np.array(outputs).T       # X, Y, Z
+    # transform N*(x, y, z) to [X, Y, Z]
+    outputs = np.array(outputs).T
 
     return outputs
