@@ -54,19 +54,35 @@ def get_nn_outputs(model_directory, inputs, epoch, gpu=True):
     outputs = net(inputs).detach().cpu().clone().numpy().T
     outputs *= 1000
 
+<<<<<<< HEAD
     # MC data -> raw data transfrom
+=======
+    # correction related to attenuation length from cwm (2018 -> 2013)
+>>>>>>> 69205cdc75babf5dbaef8aa958616596a95741f4
     # r' = [(a-b)/R * r + b] * r                    -> [c * r + d] * r
     # z' = [(a-b)/R * r + b] * z                    -> [c * r + d] * z
     # r = [R/2(a-b)] * [-b + sqrt(b^2 + 4(a-b)/R * r')]  -> (1/2c) * (-d + sqrt(d^2 + 4cr'))
     # z = 1/(c * r + d) * z'
+<<<<<<< HEAD
     # c = -0.0000242758
     c = (0.8375504 - 0.8784552) / 1685
+=======
+
+    # 2018 -> 2010 transform
+    # weight2 = 0.8784552 - 0.0000242758 * __perp(reco_vertex)  # base point -> 2018
+    c = -0.0000242758
+>>>>>>> 69205cdc75babf5dbaef8aa958616596a95741f4
     d = 0.8784552
     outputs_r = np.sqrt(outputs[0]**2 + outputs[1]**2)
     outputs_r0 = 1/(2*c) * (-d + np.sqrt(np.square(d) + 4*c*outputs_r))
     outputs *= 1 / (c * outputs_r0 + d)
 
+<<<<<<< HEAD
     # raw data -> source data transform
+=======
+    # 2010 -> 2013 transform
+    # weight2 = 1.09723 + (1.04556 - 1.09723) / 1685 * __perp(reco_vertex)    # base point -> 2013
+>>>>>>> 69205cdc75babf5dbaef8aa958616596a95741f4
     c = (1.04556 - 1.09723) / 1685
     d = 1.09723
     outputs_r0 = np.sqrt(outputs[0]**2 + outputs[1]**2)
