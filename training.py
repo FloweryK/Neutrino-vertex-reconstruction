@@ -68,35 +68,68 @@ class JsonDataset(Dataset):
             hit_time = f['hit_time']            # vector value
             hit_counts = f['hit_count']         # vector value
 
-            # fill a single data
-            x = np.zeros(354)
+            if self.mode is 'hit':
+                # fill a single data
+                x = np.zeros(354)
+                for i in range(hits):
+                    pmt = hit_pmts[i]
+                    t = hit_time[i]
+                    count = hit_counts[i]
 
-            for i in range(hits):
-                pmt = hit_pmts[i]
-                t = hit_time[i]
-                count = hit_counts[i]
+                    # breakpoint
+                    if self.is_dead_PMT and (pmt in DEAD_PMTS):
+                        continue
 
-                if self.is_dead_PMT and (pmt in DEAD_PMTS):
-                    continue
+                    # get prompted signal (before capture) or delayed signal (after capture)
+                    if self.input_type == 'prompt':
+                        x[pmt] += count if t < capture_time else 0
+                    elif self.input_type == 'delayed':
+                        x[pmt] += count if t > capture_time else 0
+                    else:
+                        x[pmt] += count
 
-                # get prompted signal (before capture) or delayed signal (after capture)
-                if self.input_type == 'prompt':
-                    x[pmt] += count if t < capture_time else 0
-                elif self.input_type == 'delayed':
-                    x[pmt] += count if t > capture_time else 0
-                else:
-                    x[pmt] += count
+                # normalizing
+                if np.max(x) > 0:
+                    x *= 1 / np.max(x)
 
-            # normalizing
-            if max(x) > 1:
-                x = x / max(x)
+                # converting input into [1, 354] format (1 channel)
+                x = np.array([x.tolist()])
+                return x
 
-            x = np.array([x.tolist()])
+            elif self.mode is 'time':
+                # Fill a single data
+                x = np.zeros([354, hits])
+                for i in range(hits):
+                    pmt = hit_pmts[i]
+                    t = hit_time[i]
 
-            return x
+                    # Breakpoint
+                    if self.is_dead_PMT and (pmt in DEAD_PMTS):
+                        continue
 
+                    # Get prompted signal (before capture) or delayed signal (after capture)
+                    if self.input_type == 'prompt':
+                        x[pmt][i] = t if t < capture_time else 0
+                    elif self.input_type == 'delayed':
+                        x[pmt][i] = t if t > capture_time else 0
+                    else:
+                        x[pmt][i] = t
 
+                # Extract  the first hit
+                x = np.min(x, axis=1)
 
+                # Normalizing
+                if np.max(x) > 0:
+                    x *= 1 / np.max(x)
+
+                # converting input into [1, 354] format (1 channel)
+                x = np.array([x.tolist()])
+                return x
+
+            else:
+                print('invalid argument for mode:', self.mode)
+                print('please select among "hit" or "time"')
+                raise ValueError
 
     def get_y(self, path):
         with open(path, encoding='UTF8') as j:
@@ -192,18 +225,20 @@ def main():
     # argument configuration
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', type=str, default='MC', help='MC root directory')
-    parser.add_argument('--input', type=str, default='prompt', help='input type from prompt, delayed or all')
-    parser.add_argument('--output', type=str, default='prompt', help='output type from prompt, delayed or IBD vertex')
+    parser.add_argument('--mode', type=str, default='hit', help='mode for input (hit, time)')
+    parser.add_argument('--input', type=str, default='prompt', help='input type (prompt, delated, all)')
+    parser.add_argument('--output', type=str, default='prompt', help='output type (prompt, delated, all)')
     parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
     parser.add_argument('--batch', type=int, default=32, help='batch size, multiplied by cuda device number')
     parser.add_argument('--worker', type=int, default=128, help='num_worker of dataloader')
     parser.add_argument('--text', type=str, default='', help='additional text to test save directory')
     parser.add_argument('--epoch', type=int, default=40, help='number of epochs')
     parser.add_argument('--data', type=int, default=0, help='number of dataset, if 0, use all')
-    parser.add_argument('--dead', type=int, default=1, help='is dead PMT on or not.')
+    parser.add_argument('--dead', type=int, default=0, help='is dead PMT on or not.')
 
     args = parser.parse_args()
     root_directory = args.root
+    mode = args.mode
     input_type = args.input
     output_type = args.output
     lr = args.lr
@@ -216,8 +251,11 @@ def main():
     # save directory
     save_directory = strftime("%Y%m%d-%H%M")
     save_directory += '_' + root_directory
+    save_directory += '_' + mode
     save_directory += '_' + input_type + '-' + output_type
     save_directory += '_e' + num_epochs
+    if num_dataset:
+        save_directory += f'_d{int(num_dataset / 1000)}k'
     if args.text:
         save_directory += '_' + args.text
 
@@ -229,13 +267,13 @@ def main():
 
     # prepare trainset
     trainpaths = paths[:int(len(paths) * 0.8)]
-    trainset = JsonDataset(paths=trainpaths, input_type=input_type, output_type=output_type, dead=dead_pmt)
+    trainset = JsonDataset(paths=trainpaths, mode=mode, input_type=input_type, output_type=output_type, dead=dead_pmt)
     trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=num_worker)
     save(trainpaths, save_directory + '/trainpaths.list')
 
     # prepare valiset
     valipaths = paths[int(len(paths) * 0.8):int(len(paths) * 0.9)]
-    valiset = JsonDataset(paths=valipaths, input_type=input_type, output_type=output_type, dead=dead_pmt)
+    valiset = JsonDataset(paths=valipaths, mode=mode, input_type=input_type, output_type=output_type, dead=dead_pmt)
     vali_inputs, vali_labels = load_all(valiset)
     save(valipaths, save_directory + '/valipaths.list')
     save(vali_inputs, save_directory + '/vali_inputs.tensor')
@@ -243,7 +281,7 @@ def main():
 
     # prepare testset
     testpaths = paths[int(len(paths) * 0.9):]
-    testset = JsonDataset(paths=testpaths, input_type=input_type, output_type=output_type, dead=dead_pmt)
+    testset = JsonDataset(paths=testpaths, mode=mode, input_type=input_type, output_type=output_type, dead=dead_pmt)
     test_inputs, test_labels = load_all(testset)
     save(testpaths, save_directory + '/testpaths.list')
     save(test_inputs, save_directory + '/test_inputs.tensor')
@@ -274,6 +312,7 @@ def main():
     config = {
         'root_directory': root_directory,
         'save directory': save_directory,
+        'mode': mode,
         'input_type': input_type,
         'output_type': output_type,
         'lr': lr,
