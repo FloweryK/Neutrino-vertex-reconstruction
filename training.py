@@ -43,9 +43,10 @@ class Net(nn.Module):
 
 
 class JsonDataset(Dataset):
-    def __init__(self, paths, input_type='prompt', output_type='prompt', dead=True):
+    def __init__(self, paths, mode='hit', input_type='prompt', output_type='prompt', dead=False):
         self.paths = paths
         self.len = len(self.paths)
+        self.mode = mode
         self.input_type = input_type
         self.output_type = output_type
         self.is_dead_PMT = dead
@@ -60,30 +61,29 @@ class JsonDataset(Dataset):
         with open(path, encoding='UTF8') as j:
             f = json.load(j)
 
-            capture_time = f['capture_time']    # scalar value
             hits = int(f['photon_hits'])        # scalar value
-            hit_counts = f['hit_count']         # vector value
+            capture_time = f['capture_time']    # scalar value
+
             hit_pmts = f['hit_pmt']             # vector value
             hit_time = f['hit_time']            # vector value
+            hit_counts = f['hit_count']         # vector value
 
             # fill a single data
             x = np.zeros(354)
 
             for i in range(hits):
-                count = hit_counts[i]
                 pmt = hit_pmts[i]
                 t = hit_time[i]
+                count = hit_counts[i]
 
                 if self.is_dead_PMT and (pmt in DEAD_PMTS):
                     continue
 
                 # get prompted signal (before capture) or delayed signal (after capture)
                 if self.input_type == 'prompt':
-                    if t < capture_time:
-                        x[pmt] += count
+                    x[pmt] += count if t < capture_time else 0
                 elif self.input_type == 'delayed':
-                    if t > capture_time:
-                        x[pmt] += count
+                    x[pmt] += count if t > capture_time else 0
                 else:
                     x[pmt] += count
 
@@ -93,7 +93,10 @@ class JsonDataset(Dataset):
 
             x = np.array([x.tolist()])
 
-        return x
+            return x
+
+
+
 
     def get_y(self, path):
         with open(path, encoding='UTF8') as j:
@@ -128,14 +131,13 @@ def load_all(dataset):
     for i, data in enumerate(dataset):
         inputs.append(data[0].tolist())
         labels.append(data[1].tolist())
-        print(f'data loading {int(100 * i / total)}% ({i}/{total}, {time.time() - start})',
+        print('data loading %i%% (%i/%i, %.1f)' % (int(100 * i / total), i, total, time.time()-start),
               end='\n' if i == (total - 1) else '\r')
-
     inputs = torch.tensor(inputs)
     labels = torch.tensor(labels)
 
-    print(f'inputs: {inputs.size()}')
-    print(f'labels: {labels.size()}')
+    print('inputs:', inputs.size())
+    print('labels:', labels.size())
     print(f'data loading took {time.time() - start:.1f} secs')
 
     return inputs, labels
@@ -144,10 +146,10 @@ def load_all(dataset):
 def __job_filter_zero_counts(path, input_type):
     f = load(path)
 
-    capture_time = f['capture_time']  # scalar value
     hits = int(f['photon_hits'])  # scalar value
-    hit_counts = f['hit_count']  # vector value
     hit_time = f['hit_time']  # vector value
+    hit_counts = f['hit_count']  # vector value
+    capture_time = f['capture_time']  # scalar value
 
     valid_counts = 0
     for i in range(hits):
@@ -176,12 +178,12 @@ def filter_zero_counts(paths, input_type):
     start = time.time()
     is_not_empty = []
     for i in range(100):
-        print(f'data filtering {i:2i}%, {time.time()-start:.2f}s', end='\n' if i == 99 else '\r')
+        print('data filtering %2i%%, %.2fs' % (i, time.time()-start), end='\n' if i == 99 else '\r')
         paths_batch = paths[int(0.01*i*len(paths)):int(0.01*(i+1)*len(paths))]
         is_not_empty += p.starmap(__job_filter_zero_counts, zip(paths_batch, repeat(input_type)))
 
     filtered_paths = [paths[i] for i in range(len(is_not_empty)) if is_not_empty[i]]
-    print(f'after filtering: {len(paths)} -> {len(filtered_paths)} ({100 * len(filtered_paths) / len(paths):.1f}%)')
+    print('after filtering: %i -> %i (%.2f%%)' % (len(paths), len(filtered_paths), 100 * len(filtered_paths) / len(paths)))
 
     return filtered_paths
 
@@ -212,7 +214,10 @@ def main():
     dead_pmt = args.dead
 
     # save directory
-    save_directory = f'{strftime("%Y%m%d-%H%M")}_{root_directory}_{input_type}-{output_type}_e{num_epochs}'
+    save_directory = strftime("%Y%m%d-%H%M")
+    save_directory += '_' + root_directory
+    save_directory += '_' + input_type + '-' + output_type
+    save_directory += '_e' + num_epochs
     if args.text:
         save_directory += '_' + args.text
 
@@ -251,7 +256,7 @@ def main():
 
     # Use data parallelism for GPU usage.
     if torch.cuda.device_count() > 1:
-        print(f'currently using {str(torch.cuda.device_count())} cuda devices.')
+        print('currently using', str(torch.cuda.device_count()), 'cuda devices.')
         net = nn.DataParallel(net)
 
     # Runtime error handling for float type to use Data parallelism.
@@ -282,7 +287,7 @@ def main():
 
     # show and save config summary
     pprint.pprint(config)
-    save(config, f'{save_directory}/configuration.json')
+    save(config, save_directory + '/configuration.json')
 
     # optional: check start time
     start_time = datetime.datetime.now()
@@ -332,18 +337,18 @@ def main():
                 dframe = pd.DataFrame(dframe).T
 
                 print('===========================================')
-                print(f'{datetime.datetime.now()} (started at: {start_time})')
-                print(f'epoch: {epoch:02i} [{i:04i}/{len(trainloader)}]')
-                print(f'train loss(mm2)={loss.item() * 10e6:.1f}, vali loss(mm2)={vali_loss}')
+                print(datetime.datetime.now(), 'started at:', start_time)
+                print('epoch: %02i (%04i/%i)' % (epoch, i, len(trainloader)))
+                print('train loss(mm2)=%.1f, vali loss(mm2)=%.1f' % (loss.item() * 10e6, vali_loss))
                 print(dframe)
 
                 if epoch not in loss_history:
                     loss_history[epoch] = {}
                 loss_history[epoch][i] = loss.item()
 
-                save(loss_history, f'{save_directory}/loss_history.json')
-                mkdir(f'{save_directory}/models/epoch_{epoch:05i}/')
-                torch.save(net.state_dict(), f'{save_directory}/models/epoch_{epoch:%05i}/{i:%05i}.pt')
+                save(loss_history, save_directory + '/loss_history.json')
+                mkdir(f'{save_directory}/models/epoch_{epoch:05}/')
+                torch.save(net.state_dict(), f'{save_directory}/models/epoch_{epoch:05}/{i:05}.pt')
 
 
 if __name__ == '__main__':
