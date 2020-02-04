@@ -165,7 +165,7 @@ def main():
     dead_pmt = args.dead
 
     # save directory
-    save_directory = strftime('%Y%m%d-%H%M') + '_' + input_type + '-' + output_type
+    save_directory = f'{strftime("%Y%m%d-%H%M")}_{root_directory}_{input_type}-{output_type}_e{num_epochs}'
     if args.text:
         save_directory += '_' + args.text
 
@@ -203,7 +203,7 @@ def main():
 
     # Use data parallelism for GPU usage.
     if torch.cuda.device_count() > 1:
-        print('currently using ' + str(torch.cuda.device_count()) + ' cuda devices.')
+        print(f'currently using {str(torch.cuda.device_count())} cuda devices.')
         net = nn.DataParallel(net)
 
     # Runtime error handling for float type to use Data parallelism.
@@ -234,7 +234,7 @@ def main():
 
     # show and save config summary
     pprint.pprint(config)
-    save(config, save_directory + '/configuration.json')
+    save(config, f'{save_directory}/configuration.json')
 
     # optional: check start time
     start_time = datetime.datetime.now()
@@ -293,9 +293,9 @@ def main():
                     loss_history[epoch] = {}
                 loss_history[epoch][i] = loss.item()
 
-                save(loss_history, save_directory + '/loss_history.json')
-                mkdir(save_directory + '/models/epoch_%05i/' % epoch)
-                torch.save(net.state_dict(), save_directory + '/models/epoch_%05i/%05i.pt' % (epoch, i))
+                save(loss_history, f'{save_directory}/loss_history.json')
+                mkdir(f'{save_directory}/models/epoch_{epoch:05i}/')
+                torch.save(net.state_dict(), f'{save_directory}/models/epoch_{epoch:%05i}/{i:%05i}.pt')
 
 
 if __name__ == '__main__':
