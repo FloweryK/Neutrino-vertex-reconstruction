@@ -1,4 +1,4 @@
-from utils import mkdir, save, path_list, strftime
+from utils import mkdir, load, save, path_list, strftime
 from utils import DEAD_PMTS
 
 import time
@@ -8,6 +8,8 @@ import argparse
 import datetime
 import numpy as np
 import pandas as pd
+from itertools import repeat
+from multiprocessing import Pool
 
 import torch
 import torch.nn as nn
@@ -139,6 +141,51 @@ def load_all(dataset):
     return inputs, labels
 
 
+def __job_filter_zero_counts(path, input_type):
+    f = load(path)
+
+    capture_time = f['capture_time']  # scalar value
+    hits = int(f['photon_hits'])  # scalar value
+    hit_counts = f['hit_count']  # vector value
+    hit_time = f['hit_time']  # vector value
+
+    valid_counts = 0
+    for i in range(hits):
+        count = hit_counts[i]
+        t = hit_time[i]
+
+        # get prompted signal (before capture) or delayed signal (after capture)
+        if input_type == 'prompt':
+            if t < capture_time:
+                valid_counts += count
+        elif input_type == 'delayed':
+            if t >= capture_time:
+                valid_counts += count
+        else:
+            valid_counts += count
+
+    if (valid_counts > 0) and (valid_counts < sum(hit_counts)):
+        return True
+    else:
+        return False
+
+
+def filter_zero_counts(paths, input_type):
+    p = Pool(processes=40)
+
+    start = time.time()
+    is_not_empty = []
+    for i in range(100):
+        print(f'data filtering {i:2i}%, {time.time()-start:.2f}s', end='\n' if i == 99 else '\r')
+        paths_batch = paths[int(0.01*i*len(paths)):int(0.01*(i+1)*len(paths))]
+        is_not_empty += p.starmap(__job_filter_zero_counts, zip(paths_batch, repeat(input_type)))
+
+    filtered_paths = [paths[i] for i in range(len(is_not_empty)) if is_not_empty[i]]
+    print(f'after filtering: {len(paths)} -> {len(filtered_paths)} ({100 * len(filtered_paths) / len(paths):.1f}%)')
+
+    return filtered_paths
+
+
 def main():
     # argument configuration
     parser = argparse.ArgumentParser()
@@ -171,6 +218,7 @@ def main():
 
     # load dataset paths
     paths = path_list(root_directory, filter='.json', shuffle=True)
+    paths = filter_zero_counts(paths, input_type)
     if num_dataset:
         paths = paths[:num_dataset]
 
