@@ -1,4 +1,4 @@
-from utils import mkdir, load, save, path_list, strftime
+from utils import mkdir, load, save, path_list
 from utils import DEAD_PMTS
 
 import time
@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 from itertools import repeat
 from multiprocessing import Pool
+import warnings
 
 import torch
 import torch.nn as nn
@@ -68,7 +69,7 @@ class JsonDataset(Dataset):
             hit_time = f['hit_time']            # vector value
             hit_counts = f['hit_count']         # vector value
 
-            if self.mode is 'hit':
+            if self.mode == 'hit':
                 # fill a single data
                 x = np.zeros(354)
                 for i in range(hits):
@@ -82,9 +83,11 @@ class JsonDataset(Dataset):
 
                     # get prompted signal (before capture) or delayed signal (after capture)
                     if self.input_type == 'prompt':
-                        x[pmt] += count if t < capture_time else 0
+                        if t < capture_time:
+                            x[pmt] += count
                     elif self.input_type == 'delayed':
-                        x[pmt] += count if t > capture_time else 0
+                        if t > capture_time:
+                            x[pmt] += count
                     else:
                         x[pmt] += count
 
@@ -93,12 +96,14 @@ class JsonDataset(Dataset):
                     x *= 1 / np.max(x)
 
                 # converting input into [1, 354] format (1 channel)
-                x = np.array([x.tolist()])
+                x = np.array([x.tolist()], dtype=float)
                 return x
 
-            elif self.mode is 'time':
+            elif self.mode == 'time':
                 # Fill a single data
-                x = np.zeros([354, hits])
+                x = np.empty([354, hits])
+                x[:] = np.nan
+
                 for i in range(hits):
                     pmt = hit_pmts[i]
                     t = hit_time[i]
@@ -109,21 +114,26 @@ class JsonDataset(Dataset):
 
                     # Get prompted signal (before capture) or delayed signal (after capture)
                     if self.input_type == 'prompt':
-                        x[pmt][i] = t if t < capture_time else 0
+                        if t < capture_time:
+                            x[pmt][i] = t
                     elif self.input_type == 'delayed':
-                        x[pmt][i] = t if t > capture_time else 0
+                        if t > capture_time:
+                            x[pmt][i] = t
                     else:
                         x[pmt][i] = t
 
-                # Extract  the first hit
-                x = np.min(x, axis=1)
+                # Extract the first hit
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore', category=RuntimeWarning)
+                    x = np.nanmean(x, axis=1)
+                x = np.nan_to_num(x, nan=.0)
 
                 # Normalizing
                 if np.max(x) > 0:
                     x *= 1 / np.max(x)
 
                 # converting input into [1, 354] format (1 channel)
-                x = np.array([x.tolist()])
+                x = np.array([x.tolist()], dtype=float)
                 return x
 
             else:
@@ -150,24 +160,25 @@ class JsonDataset(Dataset):
                 vertex_z0 = f['vertex_z0']
 
             vertex = [vertex_x0, vertex_y0, vertex_z0]
-            y = np.array(vertex) / 1000  # mm -> m transform
+            y = np.array(vertex) / 1600  # [-1, 1] transform
 
         return y
 
 
-def load_all(dataset):
-    total = len(dataset)
+def load_all(dataloader):
+    total = len(dataloader)
     start = time.time()
 
     inputs = []
     labels = []
-    for i, data in enumerate(dataset):
-        inputs.append(data[0].tolist())
-        labels.append(data[1].tolist())
-        print('data loading %i%% (%i/%i, %.1f)' % (int(100 * i / total), i, total, time.time()-start),
+    for i, data in enumerate(dataloader):
+        inputs.append(data[0])
+        labels.append(data[1])
+        print('data loading %i%% (%i/%i, %.1fs)' % (int(100 * i / total), i, total, time.time()-start),
               end='\n' if i == (total - 1) else '\r')
-    inputs = torch.tensor(inputs)
-    labels = torch.tensor(labels)
+
+    inputs = torch.cat(inputs, 0)
+    labels = torch.cat(labels, 0)
 
     print('inputs:', inputs.size())
     print('labels:', labels.size())
@@ -229,12 +240,13 @@ def main():
     parser.add_argument('--input', type=str, default='prompt', help='input type (prompt, delated, all)')
     parser.add_argument('--output', type=str, default='prompt', help='output type (prompt, delated, all)')
     parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
-    parser.add_argument('--batch', type=int, default=32, help='batch size, multiplied by cuda device number')
-    parser.add_argument('--worker', type=int, default=128, help='num_worker of dataloader')
+    parser.add_argument('--batch', type=int, default=128, help='batch size, multiplied by cuda device number')
+    parser.add_argument('--worker', type=int, default=40, help='num_worker of dataloader')
     parser.add_argument('--text', type=str, default='', help='additional text to test save directory')
     parser.add_argument('--epoch', type=int, default=40, help='number of epochs')
     parser.add_argument('--data', type=int, default=0, help='number of dataset, if 0, use all')
     parser.add_argument('--dead', type=int, default=0, help='is dead PMT on or not.')
+    parser.add_argument('--fast', type=int, default=0, help='for testing, skip filtering.')
 
     args = parser.parse_args()
     root_directory = args.root
@@ -247,21 +259,24 @@ def main():
     num_epochs = args.epoch
     num_dataset = args.data
     dead_pmt = args.dead
+    fast = args.fast
 
     # save directory
-    save_directory = strftime("%Y%m%d-%H%M")
-    save_directory += '_' + root_directory
-    save_directory += '_' + mode
-    save_directory += '_' + input_type + '-' + output_type
-    save_directory += '_e' + num_epochs
+    save_directory = datetime.datetime.now().strftime("%Y%m%d-%H%M")
+    save_directory += '-' + root_directory
+    save_directory += '-' + mode
+    save_directory += '-' + input_type + '_' + output_type
+    save_directory += '-e' + str(num_epochs)
     if num_dataset:
-        save_directory += f'_d{int(num_dataset / 1000)}k'
+        save_directory += '-d' + str(int(num_dataset / 1000)) + 'k'
     if args.text:
-        save_directory += '_' + args.text
+        save_directory += '-' + args.text
 
     # load dataset paths
     paths = path_list(root_directory, filter='.json', shuffle=True)
-    paths = filter_zero_counts(paths, input_type)
+    if not fast:
+        print('not fast: data filtering')
+        paths = filter_zero_counts(paths, input_type)
     if num_dataset:
         paths = paths[:num_dataset]
 
@@ -274,7 +289,8 @@ def main():
     # prepare valiset
     valipaths = paths[int(len(paths) * 0.8):int(len(paths) * 0.9)]
     valiset = JsonDataset(paths=valipaths, mode=mode, input_type=input_type, output_type=output_type, dead=dead_pmt)
-    vali_inputs, vali_labels = load_all(valiset)
+    valiloader = DataLoader(valiset, batch_size=batch_size, shuffle=True, num_workers=num_worker)
+    vali_inputs, vali_labels = load_all(valiloader)
     save(valipaths, save_directory + '/valipaths.list')
     save(vali_inputs, save_directory + '/vali_inputs.tensor')
     save(vali_labels, save_directory + '/vali_labels.tensor')
@@ -282,7 +298,8 @@ def main():
     # prepare testset
     testpaths = paths[int(len(paths) * 0.9):]
     testset = JsonDataset(paths=testpaths, mode=mode, input_type=input_type, output_type=output_type, dead=dead_pmt)
-    test_inputs, test_labels = load_all(testset)
+    testloader = DataLoader(testset, batch_size=batch_size, shuffle=True, num_workers=num_worker)
+    test_inputs, test_labels = load_all(testloader)
     save(testpaths, save_directory + '/testpaths.list')
     save(test_inputs, save_directory + '/test_inputs.tensor')
     save(test_labels, save_directory + '/test_labels.tensor')
@@ -329,7 +346,7 @@ def main():
     save(config, save_directory + '/configuration.json')
 
     # optional: check start time
-    start_time = datetime.datetime.now()
+    start_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     loss_history = {}
     for epoch in range(num_epochs):
@@ -363,7 +380,7 @@ def main():
                 except AttributeError:
                     pass
 
-                vali_dis = (vali_outputs - vali_labels) * 1000
+                vali_dis = (vali_outputs - vali_labels) * 1600
                 vali_sigma = np.std(vali_dis, axis=0)
                 vali_mu = np.mean(vali_dis, axis=0)
                 vali_loss = np.mean(vali_dis**2)
@@ -371,14 +388,16 @@ def main():
                 dframe = {
                     'axis': ['x', 'y', 'z'],
                     'vali_sigma': vali_sigma,
-                    'vali_mu': vali_mu
+                    'vali_mu': vali_mu,
+                    'vali[0]': vali_outputs[0],
+                    'labels[0]': vali_labels[0]
                 }
                 dframe = pd.DataFrame(dframe).T
 
                 print('===========================================')
-                print(datetime.datetime.now(), 'started at:', start_time)
+                print(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'started at:', start_time)
                 print('epoch: %02i (%04i/%i)' % (epoch, i, len(trainloader)))
-                print('train loss(mm2)=%.1f, vali loss(mm2)=%.1f' % (loss.item() * 10e6, vali_loss))
+                print('train loss(mm2)=%.1f, vali loss(mm2)=%.1f' % (loss.item() * 1600*1600, vali_loss))
                 print(dframe)
 
                 if epoch not in loss_history:
