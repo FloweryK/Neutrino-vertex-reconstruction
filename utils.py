@@ -69,8 +69,3 @@ def path_list(dir, shuffle=False, filter=False, reverse=False):
         paths = [p for p in paths if filter in p]
 
     return paths
-
-
-def strftime(form='%Y%m%d-%H:%M:%S'):
-    return datetime.datetime.now().strftime(form)
-
