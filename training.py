@@ -1,5 +1,6 @@
 from utils import mkdir, load, save, path_list
 from utils import DEAD_PMTS
+from nets import Cnn1c, Cnn2c, Net
 
 import time
 import json
@@ -19,28 +20,6 @@ from torch.utils.data import Dataset, DataLoader
 
 # for RuntimeError: see https://discuss.pytorch.org/t/runtimeerror-received-0-items-of-ancdata/4999
 torch.multiprocessing.set_sharing_strategy('file_system')
-
-
-class Net(nn.Module):
-    def __init__(self):
-        super(Net, self).__init__()
-        self.model = nn.Sequential(
-            nn.Linear(354, 128),
-            nn.ReLU(),
-            nn.Linear(128, 64),
-            nn.ReLU(),
-            nn.Linear(64, 3)
-        )
-
-        # initialize linear layers
-        for m in self.modules():
-            if type(m) is nn.Linear:
-                torch.nn.init.xavier_uniform(m.weight, gain=nn.init.calculate_gain('relu'))
-
-    def forward(self, x):
-        x = x.view(x.size(0), -1)
-        out = self.model(x)
-        return out
 
 
 class JsonDataset(Dataset):
@@ -134,6 +113,52 @@ class JsonDataset(Dataset):
 
                 # converting input into [1, 354] format (1 channel)
                 x = np.array([x.tolist()], dtype=float)
+                return x
+
+            elif self.mode == 'hit-time':
+                # fill a single data
+                x_hit = np.zeros(354)
+                if hits:
+                    x_time = np.empty([354, hits])
+                    x_time[:] = np.nan
+                else:
+                    x_time = np.zeros([354, 1])
+
+                for i in range(hits):
+                    pmt = hit_pmts[i]
+                    t = hit_time[i]
+                    count = hit_counts[i]
+
+                    # breakpoint
+                    if self.is_dead_PMT and (pmt in DEAD_PMTS):
+                        continue
+
+                    # get prompted signal (before capture) or delayed signal (after capture)
+                    if self.input_type == 'prompt':
+                        if t < capture_time:
+                            x_hit[pmt] += count
+                            x_time[pmt][i] = t
+                    elif self.input_type == 'delayed':
+                        if t > capture_time:
+                            x_hit[pmt] += count
+                            x_time[pmt][i] = t
+                    else:
+                        x_time[pmt][i] = t
+
+                # Extract the first hit
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore', category=RuntimeWarning)
+                    x_time = np.nanmin(x_time, axis=1)
+                x_time = np.nan_to_num(x_time, nan=.0)
+
+                # normalizing
+                if np.max(x_hit) > 0:
+                    x_hit *= 1 / np.max(x_hit)
+                if np.max(x_time) > 0:
+                    x_time *= 1 / np.max(x_time)
+
+                # converting input into [1, 354] format (1 channel)
+                x = np.array([x_hit.tolist(), x_time.tolist()], dtype=float)
                 return x
 
             else:
@@ -233,8 +258,9 @@ def filter_zero_counts(paths, input_type):
 
 
 def main():
-    # argument configuration
+    # 0. Argument configuration
     parser = argparse.ArgumentParser()
+    parser.add_argument('--cuda', type=int, default=1, help='cuda usage. 1 for gpu, 0 for cpu.')
     parser.add_argument('--root', type=str, default='MC', help='MC root directory')
     parser.add_argument('--mode', type=str, default='hit', help='mode for input (hit, time)')
     parser.add_argument('--input', type=str, default='prompt', help='input type (prompt, delated, all)')
@@ -249,19 +275,19 @@ def main():
     parser.add_argument('--fast', type=int, default=0, help='for testing, skip filtering.')
 
     args = parser.parse_args()
+    cuda_usage = args.cuda
     root_directory = args.root
     mode = args.mode
     input_type = args.input
     output_type = args.output
     lr = args.lr
-    batch_size = args.batch * (torch.cuda.device_count() if torch.cuda.is_available() else 1)
+    batch_size = args.batch * (torch.cuda.device_count() if (torch.cuda.is_available() and cuda_usage) else 1)
     num_worker = args.worker
     num_epochs = args.epoch
     num_dataset = args.data
     dead_pmt = args.dead
     fast = args.fast
 
-    # save directory
     save_directory = datetime.datetime.now().strftime("%Y%m%d-%H%M")
     save_directory += '-' + root_directory
     save_directory += '-' + mode
@@ -272,7 +298,8 @@ def main():
     if args.text:
         save_directory += '-' + args.text
 
-    # load dataset paths
+    # 1. Make dataloaders and datasets
+    # Load dataset paths
     paths = path_list(root_directory, filter='.json', shuffle=True)
     if not fast:
         print('not fast: data filtering')
@@ -280,7 +307,7 @@ def main():
     if num_dataset:
         paths = paths[:num_dataset]
 
-    # prepare trainset
+    # Prepare trainset
     trainpaths = paths[:int(len(paths) * 0.8)]
     trainset = JsonDataset(paths=trainpaths, mode=mode, input_type=input_type, output_type=output_type, dead=dead_pmt)
     trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=num_worker)
@@ -304,31 +331,38 @@ def main():
     save(test_inputs, save_directory + '/test_inputs.tensor')
     save(test_labels, save_directory + '/test_labels.tensor')
 
-    # network, criterion, optimizer
-    net = Net()
+    # 2. Network, criterion, optimizer
+    if mode == 'hit':
+        net = Net()
+    elif mode == 'time':
+        net = Cnn1c()
+    elif mode == 'hit-time':
+        net = Cnn2c()
+    else:
+        print('invalide mode:', mode, ', please select from (hit, time, hit-time')
+        exit()
     criterion = nn.MSELoss()
     optimizer = optim.Adam(net.parameters(), lr=lr)
 
     # Use data parallelism for GPU usage.
-    if torch.cuda.device_count() > 1:
+    if (torch.cuda.device_count() > 1) and cuda_usage:
         print('currently using', str(torch.cuda.device_count()), 'cuda devices.')
         net = nn.DataParallel(net)
-
-    # Runtime error handling for float type to use Data parallelism.
-    net = net.float()
+    net = net.float()                   # Runtime error handling for float type to use Data parallelism.
     vali_inputs = vali_inputs.float()
     vali_labels = vali_labels.float()
 
-    # move data to GPU
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # move data to device
+    device = torch.device("cuda" if (torch.cuda.is_available() and cuda_usage) else "cpu")
     net.to(device)
     vali_inputs = vali_inputs.to(device)
     vali_labels = vali_labels.to(device)
 
-    # configuration summary
+    # 3. Configuration summary
     config = {
         'root_directory': root_directory,
         'save directory': save_directory,
+        'cuda': cuda_usage,
         'mode': mode,
         'input_type': input_type,
         'output_type': output_type,
@@ -358,7 +392,7 @@ def main():
             train_inputs = train_inputs.float()
             train_labels = train_labels.float()
 
-            # Move data to GPU
+            # Move data to device
             train_inputs = train_inputs.to(device)
             train_labels = train_labels.to(device)
 
@@ -406,6 +440,7 @@ def main():
 
                 save(loss_history, save_directory + '/loss_history.json')
                 mkdir(f'{save_directory}/models/epoch_{epoch:05}/')
+
                 torch.save(net.state_dict(), f'{save_directory}/models/epoch_{epoch:05}/{i:05}.pt')
 
 
