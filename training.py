@@ -185,7 +185,7 @@ class JsonDataset(Dataset):
                 vertex_z0 = f['vertex_z0']
 
             vertex = [vertex_x0, vertex_y0, vertex_z0]
-            y = np.array(vertex) / 1600  # [-1, 1] transform
+            y = np.array(vertex) / 1000  # [-1, 1] transform
 
         return y
 
@@ -258,36 +258,46 @@ def filter_zero_counts(paths, input_type):
 
 
 def main():
-    # 0. Argument configuration
+    # Argument configuration
     parser = argparse.ArgumentParser()
-    parser.add_argument('--cuda', type=int, default=1, help='cuda usage. 1 for gpu, 0 for cpu.')
+    # general
     parser.add_argument('--root', type=str, default='MC', help='MC root directory')
     parser.add_argument('--mode', type=str, default='hit', help='mode for input (hit, time)')
     parser.add_argument('--input', type=str, default='prompt', help='input type (prompt, delated, all)')
     parser.add_argument('--output', type=str, default='prompt', help='output type (prompt, delated, all)')
-    parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
-    parser.add_argument('--batch', type=int, default=128, help='batch size, multiplied by cuda device number')
-    parser.add_argument('--worker', type=int, default=40, help='num_worker of dataloader')
-    parser.add_argument('--text', type=str, default='', help='additional text to test save directory')
-    parser.add_argument('--epoch', type=int, default=40, help='number of epochs')
+
+    # control
     parser.add_argument('--data', type=int, default=0, help='number of dataset, if 0, use all')
     parser.add_argument('--dead', type=int, default=0, help='is dead PMT on or not.')
     parser.add_argument('--fast', type=int, default=0, help='for testing, skip filtering.')
 
+    # learning
+    parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
+    parser.add_argument('--batch', type=int, default=128, help='batch size, multiplied by cuda device number')
+    parser.add_argument('--worker', type=int, default=40, help='num_worker of dataloader')
+    parser.add_argument('--epoch', type=int, default=40, help='number of epochs')
+
+    # optional
+    parser.add_argument('--text', type=str, default='', help='additional text to test save directory')
+
     args = parser.parse_args()
-    cuda_usage = args.cuda
     root_directory = args.root
     mode = args.mode
     input_type = args.input
     output_type = args.output
-    lr = args.lr
-    batch_size = args.batch * (torch.cuda.device_count() if (torch.cuda.is_available() and cuda_usage) else 1)
-    num_worker = args.worker
-    num_epochs = args.epoch
+
     num_dataset = args.data
     dead_pmt = args.dead
     fast = args.fast
 
+    lr = args.lr
+    batch_size = args.batch * (torch.cuda.device_count() if torch.cuda.is_available() else 1)
+    num_worker = args.worker
+    num_epochs = args.epoch
+
+    text = args.text
+
+    # Make save directory
     save_directory = datetime.datetime.now().strftime("%Y%m%d-%H%M")
     save_directory += '-' + root_directory
     save_directory += '-' + mode
@@ -295,10 +305,9 @@ def main():
     save_directory += '-e' + str(num_epochs)
     if num_dataset:
         save_directory += '-d' + str(int(num_dataset / 1000)) + 'k'
-    if args.text:
-        save_directory += '-' + args.text
+    if text:
+        save_directory += '-' + text
 
-    # 1. Make dataloaders and datasets
     # Load dataset paths
     paths = path_list(root_directory, filter='.json', shuffle=True)
     if not fast:
@@ -331,7 +340,7 @@ def main():
     save(test_inputs, save_directory + '/test_inputs.tensor')
     save(test_labels, save_directory + '/test_labels.tensor')
 
-    # 2. Network, criterion, optimizer
+    # Network, criterion, optimizer
     if mode == 'hit':
         net = Net()
     elif mode == 'time':
@@ -340,29 +349,28 @@ def main():
         net = Cnn2c()
     else:
         print('invalide mode:', mode, ', please select from (hit, time, hit-time')
-        exit()
+        raise ValueError
     criterion = nn.MSELoss()
     optimizer = optim.Adam(net.parameters(), lr=lr)
 
-    # Use data parallelism for GPU usage.
-    if (torch.cuda.device_count() > 1) and cuda_usage:
+    # Data parallelism
+    if torch.cuda.device_count() > 1:
         print('currently using', str(torch.cuda.device_count()), 'cuda devices.')
         net = nn.DataParallel(net)
     net = net.float()                   # Runtime error handling for float type to use Data parallelism.
     vali_inputs = vali_inputs.float()
     vali_labels = vali_labels.float()
 
-    # move data to device
-    device = torch.device("cuda" if (torch.cuda.is_available() and cuda_usage) else "cpu")
+    # GPU usage: move data to device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     net.to(device)
     vali_inputs = vali_inputs.to(device)
     vali_labels = vali_labels.to(device)
 
-    # 3. Configuration summary
+    # Configuration summary
     config = {
         'root_directory': root_directory,
         'save directory': save_directory,
-        'cuda': cuda_usage,
         'mode': mode,
         'input_type': input_type,
         'output_type': output_type,
@@ -374,12 +382,9 @@ def main():
         'model': {l[0]: str(l[1]) for l in net.named_children()},
         'using_dead_pmt': dead_pmt,
     }
-
-    # show and save config summary
-    pprint.pprint(config)
     save(config, save_directory + '/configuration.json')
 
-    # optional: check start time
+    # Check start time
     start_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     loss_history = {}
@@ -388,11 +393,11 @@ def main():
             # Get inputs and labels
             train_inputs, train_labels = data
 
-            # Runtime error handling for float type to use Data parallelism.
+            # Data parallelism: Runtime error handling
             train_inputs = train_inputs.float()
             train_labels = train_labels.float()
 
-            # Move data to device
+            # GPU usage: Move data to device
             train_inputs = train_inputs.to(device)
             train_labels = train_labels.to(device)
 
@@ -414,7 +419,7 @@ def main():
                 except AttributeError:
                     pass
 
-                vali_dis = (vali_outputs - vali_labels) * 1600
+                vali_dis = (vali_outputs - vali_labels) * 1000
                 vali_sigma = np.std(vali_dis, axis=0)
                 vali_mu = np.mean(vali_dis, axis=0)
                 vali_loss = np.mean(vali_dis**2)
@@ -441,7 +446,11 @@ def main():
                 save(loss_history, save_directory + '/loss_history.json')
                 mkdir(f'{save_directory}/models/epoch_{epoch:05}/')
 
-                torch.save(net.state_dict(), f'{save_directory}/models/epoch_{epoch:05}/{i:05}.pt')
+                if torch.cuda.device_count() > 1:
+                    # if using data parallelism, you should save model in module.state_dict()
+                    torch.save(net.module.state_dict(), f'{save_directory}/models/epoch_{epoch:05}/{i:05}.pt')
+                else:
+                    torch.save(net.state_dict(), f'{save_directory}/models/epoch_{epoch:05}/{i:05}.pt')
 
 
 if __name__ == '__main__':
