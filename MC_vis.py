@@ -139,6 +139,13 @@ def __job(path, interp_r, interp_z, pmt_positions):
         return False
 
 
+def filter_nsigma(outputs, n):
+    ns, bins = np.histogram(outputs, bins=200)
+    peak = bins[np.argmax(ns)]
+    std = np.std(outputs)
+    return [output for output in outputs if (peak - n * std) < output < (peak + n * std)]
+
+
 def main():
     # control group
     print('control group root: ')
@@ -186,13 +193,26 @@ def main():
                             histtype='step',
                             label=ex_names[i])
 
+        # Text on filtered sigma
+        control_filtered_std = np.std(filter_nsigma(control_residual[axis], n=2))
+        ex_filtered_std = [np.std(filter_nsigma(ex_residuals[i][axis], n=2)) for i in range(ex_number)]
+        text_std = '$\\sigma_{%s}=%.1fmm$' % (control_name, control_filtered_std)
+        for i in range(ex_number):
+            text_std += '\n$\\sigma_{%s}=%.1fmm$' % (ex_names[i], ex_filtered_std[i])
+
+        axes[axis].text(200, 0.78/100,
+                        text_std,
+                        ha='left', va='top',
+                        fontsize=8,
+                        bbox=dict(boxstyle='square', fc='w'))
+
         # axes properties
         axis_name = ['x', 'y', 'z'][axis]
         axes[axis].set_xlabel(r'$%s_{rec} - %s_{real} $ (mm)' % (axis_name, axis_name))
         axes[axis].set_ylabel('portion')
         axes[axis].yaxis.set_major_formatter(PercentFormatter(1))
         axes[axis].set_xlim([-1000, 1000])
-        axes[axis].set_ylim([0, 1.0/100])
+        axes[axis].set_ylim([0, 0.8/100])
         axes[axis].grid()
         axes[axis].legend(fontsize=8, loc='upper left')
 
