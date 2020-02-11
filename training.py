@@ -1,10 +1,9 @@
 from utils import mkdir, load, save, path_list
 from utils import DEAD_PMTS
-from nets import Cnn1c, Cnn2c, Net
+import nets
 
 import time
 import json
-import pprint
 import argparse
 import datetime
 import numpy as np
@@ -157,8 +156,8 @@ class JsonDataset(Dataset):
                 if np.max(x_time) > 0:
                     x_time *= 1 / np.max(x_time)
 
-                # converting input into [1, 354] format (1 channel)
-                x = np.array([x_hit.tolist(), x_time.tolist()], dtype=float)
+                # converting input into [1, 354 * 2] format (1 channel)
+                x = np.array([x_hit.tolist() + x_time.tolist()], dtype=float)
                 return x
 
             else:
@@ -260,69 +259,88 @@ def filter_zero_counts(paths, input_type):
 def main():
     # Argument configuration
     parser = argparse.ArgumentParser()
-    # general
+
+    # general settings
     parser.add_argument('--root', type=str, default='MC', help='MC root directory')
-    parser.add_argument('--mode', type=str, default='hit', help='mode for input (hit, time)')
     parser.add_argument('--input', type=str, default='prompt', help='input type (prompt, delated, all)')
     parser.add_argument('--output', type=str, default='prompt', help='output type (prompt, delated, all)')
+    parser.add_argument('--mode', type=str, required=True, help='mode for input (hit, time)')
 
-    # control
-    parser.add_argument('--data', type=int, default=0, help='number of dataset, if 0, use all')
-    parser.add_argument('--dead', type=int, default=0, help='is dead PMT on or not.')
+    # control settings
+    parser.add_argument('--num_dataset', type=int, default=0, help='number of dataset, if 0, use all')
+    parser.add_argument('--dead_pmt', type=int, default=0, help='is dead PMT on or not.')
     parser.add_argument('--fast', type=int, default=0, help='for testing, skip filtering.')
 
-    # learning
+    # learning settings
+    parser.add_argument('--net_type', type=str, required=True, help='network using (Net, Net2c, Cnn1c, Cnn2c')
     parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
     parser.add_argument('--batch', type=int, default=128, help='batch size, multiplied by cuda device number')
     parser.add_argument('--worker', type=int, default=40, help='num_worker of dataloader')
     parser.add_argument('--epoch', type=int, default=40, help='number of epochs')
 
-    # optional
+    # optional settings
     parser.add_argument('--text', type=str, default='', help='additional text to test save directory')
 
+    # Parse arguments
     args = parser.parse_args()
+
+    # general settings
     root_directory = args.root
-    mode = args.mode
     input_type = args.input
     output_type = args.output
+    mode = args.mode
 
-    num_dataset = args.data
-    dead_pmt = args.dead
+    # control settings
+    num_dataset = args.num_dataset
+    dead_pmt = args.dead_pmt
     fast = args.fast
 
+    # learning settings
+    net_type = args.net_type
     lr = args.lr
     batch_size = args.batch * (torch.cuda.device_count() if torch.cuda.is_available() else 1)
     num_worker = args.worker
     num_epochs = args.epoch
 
+    # optional settings
     text = args.text
 
     # Make save directory
     save_directory = datetime.datetime.now().strftime("%Y%m%d-%H%M")
     save_directory += '-' + root_directory
     save_directory += '-' + mode
+    save_directory += '-' + net_type
     save_directory += '-' + input_type + '_' + output_type
     save_directory += '-e' + str(num_epochs)
+    if dead_pmt:
+        save_directory += '-dead'
     if num_dataset:
         save_directory += '-d' + str(int(num_dataset / 1000)) + 'k'
+    if fast:
+        save_directory += '-fast'
     if text:
         save_directory += '-' + text
+    print('save directory: ' + save_directory)
 
     # Load dataset paths
+    print('loading path list')
     paths = path_list(root_directory, filter='.json', shuffle=True)
     if not fast:
-        print('not fast: data filtering')
+        print('zero input data filtering')
         paths = filter_zero_counts(paths, input_type)
     if num_dataset:
+        print('data size limit:', num_dataset)
         paths = paths[:num_dataset]
 
     # Prepare trainset
+    print('preparing trainset')
     trainpaths = paths[:int(len(paths) * 0.8)]
     trainset = JsonDataset(paths=trainpaths, mode=mode, input_type=input_type, output_type=output_type, dead=dead_pmt)
     trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=num_worker)
     save(trainpaths, save_directory + '/trainpaths.list')
 
     # prepare valiset
+    print('preparing valiset')
     valipaths = paths[int(len(paths) * 0.8):int(len(paths) * 0.9)]
     valiset = JsonDataset(paths=valipaths, mode=mode, input_type=input_type, output_type=output_type, dead=dead_pmt)
     valiloader = DataLoader(valiset, batch_size=batch_size, shuffle=True, num_workers=num_worker)
@@ -332,6 +350,7 @@ def main():
     save(vali_labels, save_directory + '/vali_labels.tensor')
 
     # prepare testset
+    print('preparing testset')
     testpaths = paths[int(len(paths) * 0.9):]
     testset = JsonDataset(paths=testpaths, mode=mode, input_type=input_type, output_type=output_type, dead=dead_pmt)
     testloader = DataLoader(testset, batch_size=batch_size, shuffle=True, num_workers=num_worker)
@@ -341,15 +360,19 @@ def main():
     save(test_labels, save_directory + '/test_labels.tensor')
 
     # Network, criterion, optimizer
-    if mode == 'hit':
-        net = Net()
-    elif mode == 'time':
-        net = Cnn1c()
-    elif mode == 'hit-time':
-        net = Cnn2c()
+    print('creating net, criterion, optimizer')
+    if net_type == 'Net':
+        net = nets.Net()
+    elif net_type == 'Net2c':
+        net = nets.Net2c()
+    elif net_type == 'CNN1c':
+        net = nets.CNN1c()
+    elif net_type == 'CNN2c':
+        net = nets.CNN2c()
     else:
-        print('invalide mode:', mode, ', please select from (hit, time, hit-time')
+        print('invalide net type')
         raise ValueError
+
     criterion = nn.MSELoss()
     optimizer = optim.Adam(net.parameters(), lr=lr)
 
@@ -362,6 +385,7 @@ def main():
     vali_labels = vali_labels.float()
 
     # GPU usage: move data to device
+    print('moving net and data to device')
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     net.to(device)
     vali_inputs = vali_inputs.to(device)
@@ -369,24 +393,30 @@ def main():
 
     # Configuration summary
     config = {
-        'root_directory': root_directory,
         'save directory': save_directory,
-        'mode': mode,
+
+        'root_directory': root_directory,
         'input_type': input_type,
         'output_type': output_type,
+        'mode': mode,
+
+        'num_dataset:': num_dataset if num_dataset else 'full load',
+        'dead_pmt': dead_pmt,
+        'fast': fast,
+
+        'net_type': net_type,
         'lr': lr,
         'batch_size': batch_size,
         'num_worker': num_worker,
         'num_epochs': num_epochs,
-        'number of data using:': num_dataset if num_dataset else 'full load',
+
         'model': {l[0]: str(l[1]) for l in net.named_children()},
-        'using_dead_pmt': dead_pmt,
+
     }
     save(config, save_directory + '/configuration.json')
 
-    # Check start time
+    # start training
     start_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
     loss_history = {}
     for epoch in range(num_epochs):
         for i, data in enumerate(trainloader):
@@ -436,7 +466,7 @@ def main():
                 print('===========================================')
                 print(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'started at:', start_time)
                 print('epoch: %02i (%04i/%i)' % (epoch, i, len(trainloader)))
-                print('train loss(mm2)=%.1f, vali loss(mm2)=%.1f' % (loss.item() * 1600*1600, vali_loss))
+                print('train loss(mm2)=%.1f, vali loss(mm2)=%.1f' % (loss.item() * 1000*1000, vali_loss))
                 print(dframe)
 
                 if epoch not in loss_history:

@@ -8,9 +8,13 @@ class Net(nn.Module):
         self.model = nn.Sequential(
             nn.Linear(354, 128),
             nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
             nn.Linear(128, 64),
             nn.ReLU(),
-            nn.Linear(64, 3)
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, 3)
         )
 
         # initialize linear layers
@@ -24,9 +28,35 @@ class Net(nn.Module):
         return out
 
 
-class Cnn1c(nn.Module):
+class Net2c(nn.Module):
     def __init__(self):
-        super(Cnn1c, self).__init__()
+        super(Net2c, self).__init__()
+        self.model = nn.Sequential(
+            nn.Linear(354*2, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, 3)
+        )
+
+        # initialize linear layers
+        for m in self.modules():
+            if type(m) is nn.Linear:
+                torch.nn.init.xavier_uniform(m.weight, gain=nn.init.calculate_gain('relu'))
+
+    def forward(self, x):
+        x = x.view(x.size(0), -1)
+        out = self.model(x)
+        return out
+
+
+class CNN1c(nn.Module):
+    def __init__(self):
+        super(CNN1c, self).__init__()
         self.convLayer1 = nn.Sequential(
             nn.Conv1d(1, 16, 5),                    # 2*(354) -> 16*(350)
             nn.ReLU(),
@@ -73,9 +103,9 @@ class Cnn1c(nn.Module):
         return x
 
 
-class Cnn2c(nn.Module):
+class CNN2c(nn.Module):
     def __init__(self):
-        super(Cnn2c, self).__init__()
+        super(CNN2c, self).__init__()
         self.convLayer = nn.Sequential(
             nn.Conv1d(2, 16, 5),                    # 2*(354) -> 16*(350)
             nn.ReLU(),
