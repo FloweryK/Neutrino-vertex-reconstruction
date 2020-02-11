@@ -14,15 +14,19 @@ from multiprocessing import Pool
 
 def neural_residual(root_dir):
     # model selection
-    mode = load(root_dir + '/configuration.json')['mode']
-    if mode == 'hit-time':
-        net = nets.Cnn2c()
-    elif mode == 'time':
-        net = nets.Cnn1c()
-    elif mode == 'hit':
+    net_type = load(root_dir + '/configuration.json')['net_type']
+    # Network, criterion, optimizer
+    print('creating net, criterion, optimizer')
+    if net_type == 'Net':
         net = nets.Net()
+    elif net_type == 'Net2c':
+        net = nets.Net2c()
+    elif net_type == 'CNN1c':
+        net = nets.CNN1c()
+    elif net_type == 'CNN2c':
+        net = nets.CNN2c()
     else:
-        print('invalid net model type.')
+        print('invalide net type')
         raise ValueError
 
     # get the latest model for neural network
