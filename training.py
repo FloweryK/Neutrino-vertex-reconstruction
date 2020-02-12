@@ -22,10 +22,11 @@ torch.multiprocessing.set_sharing_strategy('file_system')
 
 
 class JsonDataset(Dataset):
-    def __init__(self, paths, mode='hit', input_type='prompt', output_type='prompt', dead=False):
+    def __init__(self, paths, mode, net_type, input_type, output_type, dead=False):
         self.paths = paths
         self.len = len(self.paths)
         self.mode = mode
+        self.net_type = net_type
         self.input_type = input_type
         self.output_type = output_type
         self.is_dead_PMT = dead
@@ -38,135 +39,81 @@ class JsonDataset(Dataset):
 
     def get_x(self, path):
         with open(path, encoding='UTF8') as j:
+            # load json entry
             f = json.load(j)
 
+            # load basic entry attributes
             hits = int(f['photon_hits'])        # scalar value
             capture_time = f['capture_time']    # scalar value
-
             hit_pmts = f['hit_pmt']             # vector value
             hit_time = f['hit_time']            # vector value
             hit_counts = f['hit_count']         # vector value
 
-            if self.mode == 'hit':
-                # fill a single data
-                x = np.zeros(354)
-                for i in range(hits):
-                    pmt = hit_pmts[i]
-                    t = hit_time[i]
-                    count = hit_counts[i]
-
-                    # breakpoint
-                    if self.is_dead_PMT and (pmt in DEAD_PMTS):
-                        continue
-
-                    # get prompted signal (before capture) or delayed signal (after capture)
-                    if self.input_type == 'prompt':
-                        if t < capture_time:
-                            x[pmt] += count
-                    elif self.input_type == 'delayed':
-                        if t > capture_time:
-                            x[pmt] += count
-                    else:
-                        x[pmt] += count
-
-                # normalizing
-                if np.max(x) > 0:
-                    x *= 1 / np.max(x)
-
-                # converting input into [1, 354] format (1 channel)
-                x = np.array([x.tolist()], dtype=float)
-                return x
-
-            elif self.mode == 'time':
-                # Fill a single data
-                x = np.empty([354, hits])
-                x[:] = np.nan
-
-                for i in range(hits):
-                    pmt = hit_pmts[i]
-                    t = hit_time[i]
-
-                    # Breakpoint
-                    if self.is_dead_PMT and (pmt in DEAD_PMTS):
-                        continue
-
-                    # Get prompted signal (before capture) or delayed signal (after capture)
-                    if self.input_type == 'prompt':
-                        if t < capture_time:
-                            x[pmt][i] = t
-                    elif self.input_type == 'delayed':
-                        if t > capture_time:
-                            x[pmt][i] = t
-                    else:
-                        x[pmt][i] = t
-
-                # Extract the first hit
-                with warnings.catch_warnings():
-                    warnings.simplefilter('ignore', category=RuntimeWarning)
-                    x = np.nanmean(x, axis=1)
-                x = np.nan_to_num(x, nan=.0)
-
-                # Normalizing
-                if np.max(x) > 0:
-                    x *= 1 / np.max(x)
-
-                # converting input into [1, 354] format (1 channel)
-                x = np.array([x.tolist()], dtype=float)
-                return x
-
-            elif self.mode == 'hit-time':
-                # fill a single data
-                x_hit = np.zeros(354)
-                if hits:
-                    x_time = np.empty([354, hits])
-                    x_time[:] = np.nan
-                else:
-                    x_time = np.zeros([354, 1])
-
-                for i in range(hits):
-                    pmt = hit_pmts[i]
-                    t = hit_time[i]
-                    count = hit_counts[i]
-
-                    # breakpoint
-                    if self.is_dead_PMT and (pmt in DEAD_PMTS):
-                        continue
-
-                    # get prompted signal (before capture) or delayed signal (after capture)
-                    if self.input_type == 'prompt':
-                        if t < capture_time:
-                            x_hit[pmt] += count
-                            x_time[pmt][i] = t
-                    elif self.input_type == 'delayed':
-                        if t > capture_time:
-                            x_hit[pmt] += count
-                            x_time[pmt][i] = t
-                    else:
-                        x_time[pmt][i] = t
-
-                # Extract the first hit
-                with warnings.catch_warnings():
-                    warnings.simplefilter('ignore', category=RuntimeWarning)
-                    x_time = np.nanmin(x_time, axis=1)
-                x_time = np.nan_to_num(x_time, nan=.0)
-
-                # normalizing
-                if np.max(x_hit) > 0:
-                    x_hit *= 1 / np.max(x_hit)
-                if np.max(x_time) > 0:
-                    x_time *= 1 / np.max(x_time)
-
-                # converting input into [1, 354 * 2] format (1 channel)
-                x = np.array([x_hit.tolist() + x_time.tolist()], dtype=float)
-                return x
-
+            # prepare a single event data
+            x_hit = np.zeros(354)
+            if hits:
+                x_time = np.empty([354, hits])
+                x_time[:] = np.nan
             else:
-                print('invalid argument for mode:', self.mode)
-                print('please select among "hit" or "time"')
+                x_time = np.zeros([354, 1])
+
+            # fill all valid event data
+            for i in range(hits):
+                pmt = hit_pmts[i]
+                t = hit_time[i]
+                count = hit_counts[i]
+
+                # breakpoint
+                if self.is_dead_PMT and (pmt in DEAD_PMTS):
+                    continue
+
+                # get prompted signal (before capture) or delayed signal (after capture)
+                if self.input_type == 'prompt':
+                    if t < capture_time:
+                        x_hit[pmt] += count
+                        x_time[pmt][i] = t
+                elif self.input_type == 'delayed':
+                    if t > capture_time:
+                        x_hit[pmt] += count
+                        x_time[pmt][i] = t
+                else:
+                    x_time[pmt][i] = t
+
+            # Extract the first hit
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', category=RuntimeWarning)
+                x_time = np.nanmin(x_time, axis=1)
+            x_time = np.nan_to_num(x_time, nan=.0)
+
+            # normalizing
+            if np.max(x_hit) > 0:
+                x_hit *= 1 / np.max(x_hit)
+            if np.max(x_time) > 0:
+                x_time *= 1 / np.max(x_time)
+
+            if self.mode == 'hit':
+                x = np.array([x_hit.tolist()], dtype=float)
+            elif self.mode == 'time':
+                x = np.array([x_time.tolist()], dtype=float)
+            elif self.mode == 'hit-time':
+                if self.net_type == 'CNN1c':
+                    # one channel input
+                    x = np.array([x_hit.tolist() + x_time.tolist()], dtype=float)
+                elif self.net_type == 'CNN2c':
+                    # two channel input
+                    x = np.array([x_hit.tolist(), x_time.tolist()], dtype=float)
+                else:
+                    print('invalid net_type (%s) for mode (%s)' % (self.net_type, self.mode))
+                    raise ValueError
+            else:
+                print('invalid  mode (%s)' % self.mode)
                 raise ValueError
+
+            return x
 
     def get_y(self, path):
         with open(path, encoding='UTF8') as j:
+            # load json entry
             f = json.load(j)
 
             # vertices for label
@@ -335,14 +282,14 @@ def main():
     # Prepare trainset
     print('preparing trainset')
     trainpaths = paths[:int(len(paths) * 0.8)]
-    trainset = JsonDataset(paths=trainpaths, mode=mode, input_type=input_type, output_type=output_type, dead=dead_pmt)
+    trainset = JsonDataset(trainpaths, mode, net_type, input_type, output_type, dead_pmt)
     trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=num_worker)
     save(trainpaths, save_directory + '/trainpaths.list')
 
     # prepare valiset
     print('preparing valiset')
     valipaths = paths[int(len(paths) * 0.8):int(len(paths) * 0.9)]
-    valiset = JsonDataset(paths=valipaths, mode=mode, input_type=input_type, output_type=output_type, dead=dead_pmt)
+    valiset = JsonDataset(valipaths, mode, net_type, input_type, output_type, dead_pmt)
     valiloader = DataLoader(valiset, batch_size=batch_size, shuffle=True, num_workers=num_worker)
     vali_inputs, vali_labels = load_all(valiloader)
     save(valipaths, save_directory + '/valipaths.list')
@@ -352,7 +299,7 @@ def main():
     # prepare testset
     print('preparing testset')
     testpaths = paths[int(len(paths) * 0.9):]
-    testset = JsonDataset(paths=testpaths, mode=mode, input_type=input_type, output_type=output_type, dead=dead_pmt)
+    testset = JsonDataset(testpaths, mode, net_type, input_type, output_type, dead_pmt)
     testloader = DataLoader(testset, batch_size=batch_size, shuffle=True, num_workers=num_worker)
     test_inputs, test_labels = load_all(testloader)
     save(testpaths, save_directory + '/testpaths.list')
@@ -372,7 +319,6 @@ def main():
     else:
         print('invalide net type')
         raise ValueError
-
     criterion = nn.MSELoss()
     optimizer = optim.Adam(net.parameters(), lr=lr)
 
@@ -393,8 +339,6 @@ def main():
 
     # Configuration summary
     config = {
-        'save directory': save_directory,
-
         'root_directory': root_directory,
         'input_type': input_type,
         'output_type': output_type,
@@ -411,6 +355,7 @@ def main():
         'num_epochs': num_epochs,
 
         'model': {l[0]: str(l[1]) for l in net.named_children()},
+        'save directory': save_directory,
 
     }
     save(config, save_directory + '/configuration.json')
