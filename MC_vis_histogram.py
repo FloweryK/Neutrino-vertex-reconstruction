@@ -15,8 +15,6 @@ from multiprocessing import Pool
 def neural_residual(root_dir):
     # model selection
     net_type = load(root_dir + '/configuration.json')['net_type']
-    # Network, criterion, optimizer
-    print('creating net, criterion, optimizer')
     if net_type == 'Net':
         net = nets.Net()
     elif net_type == 'Net2c':
@@ -163,9 +161,7 @@ def main():
     ex_number = int(input())
 
     print('experimental group roots (%i):' % ex_number)
-    ex_root = []
-    for _ in range(ex_number):
-        ex_root.append(str(input()))
+    ex_root = [str(input()) for _ in range(ex_number)]
 
     print('experimental group names')
     ex_names = []
@@ -221,7 +217,7 @@ def main():
         axes[axis].legend(fontsize=8, loc='upper left')
 
     plt.tight_layout()
-    plt.savefig('MC_vis.png')
+    plt.savefig('MC_vis_histogram.png')
     plt.close()
 
 
