@@ -47,10 +47,12 @@ def job(path, z, event_cut):
 
     # result format
     result = {
-        'detector_type': detector_type,
-        'z': z[run_number],
-        'run_number': run_number,
-        'subrun_number': subrun_number,
+        'info': {
+            'detector_type': detector_type,
+            'z': z[run_number],
+            'run_number': run_number,
+            'subrun_number': subrun_number
+        },
         'event': {}
     }
 

@@ -11,10 +11,7 @@ def job(path):
 
     # result format
     result = {
-        'detector_type': f['detector_type'],
-        'z': f['z'],
-        'run_number': f['run_number'],
-        'subrun_number': f['subrun_number'],
+        'info': f['info'],
         'input_charge': [],
         'input_time': [],
         'valid_count': 0
@@ -38,11 +35,11 @@ def job(path):
             result['input_time'].append(input_time)
 
     # save the result
-    save(result, f"SRC_json2input/{f['detector_type']}_{f['run_number']:06}_{f['subrun_number']:06}.json")
+    save(result, f"SRC_json2input/{result['info']['detector_type']}_{result['info']['run_number']:06}_{result['info']['subrun_number']:06}.json")
 
 
 def run():
-    mkdir('json2input/')
+    mkdir('SRC_json2input/')
 
     # multiprocessing
     p = Pool(processes=40)

@@ -8,38 +8,6 @@ from scipy.stats import norm
 N_BIN = 200
 
 
-def zpos(path='src/runList_20140821.txt'):
-    with open(path, 'r') as f:
-        result = {}
-
-        while True:
-            line = f.readline()
-            if not line:
-                break
-
-            if 'cm' in line:
-                line = line.split(' ')
-
-                if '-' in line[2]:
-                    run = line[0]
-
-                    if 'cm' in line[4]:
-                        z = line[4][0]
-                    elif 'cm' in line[3]:
-                        z = line[3][:2]
-                    elif 'cm' in line[2]:
-                        z = line[2][5:-3]
-
-                    try:
-                        run = int(run)
-                        z = 1600 - int(z) * 10
-                        result[run] = z
-                    except ValueError:
-                        pass
-
-    return result
-
-
 def filter_nsigma(outputs, n):
     ns, bins = np.histogram(outputs, bins=N_BIN)
     peak = bins[np.argmax(ns)]
@@ -52,10 +20,6 @@ def standard_error(output):
 
 
 def run():
-    # load sources
-    z = zpos('src/runList_20140821.txt')
-    paths = path_list('inputs2outputs/')
-
     X = []
     Y_rec_cwm = []
     Y_rec_nn = []
@@ -64,16 +28,13 @@ def run():
     Y_err_cwm = []
     Y_err_nn = []
 
+    paths = path_list('SRC_input2output/')
     for path in paths:
         f = load(path)
-        run = int(f['run'])
-
-        # breakpoint
-        if run not in z:
-            continue
-        if z[run] in X:
+        z = f['info']['z']
+        if z in X:
             break
-        print(z[run])
+        print(f'working on z={z} in {path}')
 
         # get 3-axis outputs of cwm, nn
         outputs_cwm = f['outputs_cwm']
@@ -96,7 +57,7 @@ def run():
         se_nn = [standard_error(output) for output in filtered_nn]
 
         # make x, y axis data
-        X.append(z[run])
+        X.append(z)
         Y_rec_cwm.append(rec_cwm)
         Y_rec_nn.append(rec_nn)
         Y_width_cwm.append(std_cwm)
