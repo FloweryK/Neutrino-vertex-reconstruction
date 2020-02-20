@@ -10,20 +10,16 @@ import scipy.interpolate as interpolate
 def get_labels(root_directory, target, form='tensor'):
     labels = load(root_directory + '/' + target + '_labels.tensor')
     labels = labels.float()
-
     if form is 'numpy':
         labels = labels.numpy()
-
     return labels
 
 
 def get_inputs(root_directory, target, form='tensor'):
     inputs = load(root_directory + '/' + target + '_inputs.tensor')
     inputs = inputs.float()
-
     if form is 'numpy':
         inputs = inputs.numpy()
-
     return inputs
 
 
@@ -33,8 +29,12 @@ def get_nn_outputs(model_directory, net_type, inputs, epoch, gpu=True):
         net = nets.Net()
     elif net_type == 'Net2c':
         net = nets.Net2c()
+    elif net_type == 'CNN1c':
+        net = nets.CNN1c()
+    elif net_type == 'CNN2c':
+        net = nets.CNN2c()
     else:
-        print('wrong network')
+        print('invalid net_type: ' + net_type)
         raise ValueError
 
     if gpu and torch.cuda.is_available():
